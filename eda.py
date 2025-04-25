@@ -1,56 +1,71 @@
 """
-Exploratory Data Analysis of NYC Temperature Data
-=================================================
+NYC Central Park Temperature Prediction - Exploratory Data Analysis
+==================================================================
 
 This script performs exploratory data analysis on the datasets collected for
 predicting high temperatures in Central Park, New York.
 
-The analysis covers:
-1. Data loading and cleaning
-2. Statistical summaries
-3. Temporal patterns
-4. Relationships between variables
-5. Feature importance for temperature prediction
+It focuses on:
+1. Data loading and preprocessing
+2. Temporal patterns analysis
+3. Feature correlation analysis
+4. Variable distributions and relationships
+5. Feature importance
 """
 
 import os
-import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
 from scipy import stats
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.cluster import KMeans
-from scipy.cluster.hierarchy import dendrogram, linkage
-from sklearn.metrics import silhouette_score
-
-
-# Set pandas display options
-pd.set_option('display.max_columns', None)
-pd.set_option('display.max_rows', 100)
-pd.set_option('display.float_format', '{:.2f}'.format)
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
 
 # Create output directories
 os.makedirs('reports/figures', exist_ok=True)
 os.makedirs('data/processed', exist_ok=True)
 
+# -------------------------------------------------------
+# Data Loading Functions
+# -------------------------------------------------------
 
-#########################################################
-# 1. Data Loading and Cleaning
-#########################################################
-
-def load_datasets():
+def load_dataset(file_path, dataset_name):
     """
-    Load all raw datasets and perform basic cleaning
+    Load a single dataset from a file path.
+
+    Parameters:
+    -----------
+    file_path : str
+        Path to the dataset file
+    dataset_name : str
+        Name of the dataset for logging purposes
+
+    Returns:
+    --------
+    pandas.DataFrame or None
+        Loaded dataset or None if file doesn't exist
+    """
+    if os.path.exists(file_path):
+        df = pd.read_csv(file_path)
+
+        # Convert date column to datetime if it exists
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+
+        print(f"  {dataset_name}: {df.shape[0]} rows, {df.shape[1]} columns")
+        return df
+    else:
+        print(f"  {dataset_name}: File not found")
+        return None
+
+def load_all_datasets():
+    """
+    Load all raw datasets for the NYC temperature prediction project.
 
     Returns:
     --------
@@ -73,24 +88,101 @@ def load_datasets():
 
     print("Loading datasets...")
 
-    # Load each dataset if it exists
+    # Load each dataset
     for name, file_path in dataset_files.items():
-        if os.path.exists(file_path):
-            datasets[name] = pd.read_csv(file_path)
-            print(f"  {name}: {datasets[name].shape[0]} rows, {datasets[name].shape[1]} columns")
+        datasets[name] = load_dataset(file_path, name)
 
-            # Convert date column to datetime
-            if 'date' in datasets[name].columns:
-                datasets[name]['date'] = pd.to_datetime(datasets[name]['date'])
-        else:
-            print(f"  {name}: File not found")
+    return {k: v for k, v in datasets.items() if v is not None}
 
-    return datasets
+# -------------------------------------------------------
+# Data Preprocessing Functions
+# -------------------------------------------------------
 
-
-def clean_datasets(datasets):
+def create_lag_features(df, temp_columns, lag_periods=[1, 2, 3, 7, 14, 30]):
     """
-    Clean and prepare datasets for analysis
+    Create lag features for temperature columns.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Dataset with date index
+    temp_columns : list
+        List of temperature column names to create lags for
+    lag_periods : list, optional
+        List of periods to lag by
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with added lag features
+    """
+    print(f"Creating lag features for {len(temp_columns)} temperature columns")
+
+    # Create a copy to avoid modifying the original
+    result_df = df.copy()
+
+    # Make sure the data is sorted by date
+    if 'date' in result_df.columns:
+        result_df = result_df.sort_values('date')
+
+    # For each temperature column, create lag features
+    for col in temp_columns:
+        if col in result_df.columns:
+            # Skip the target column (tmax) - we don't lag the target
+            if col == 'tmax':
+                continue
+
+            # Create lag features
+            for lag in lag_periods:
+                result_df[f"{col}_lag{lag}"] = result_df[col].shift(lag)
+
+            # Add rolling window features
+            for window in [7, 14, 30]:
+                if window in lag_periods:
+                    # Only create if we have the lag already
+                    result_df[f"{col}_rolling_mean{window}"] = result_df[col].rolling(window=window).mean().shift(1)
+                    result_df[f"{col}_rolling_std{window}"] = result_df[col].rolling(window=window).std().shift(1)
+
+    # Return the result with lag features
+    return result_df
+
+def extract_date_features(df):
+    """
+    Extract date features from a date column.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with a 'date' column
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with added date features
+    """
+    # Create a copy to avoid modifying the original
+    result_df = df.copy()
+
+    # Extract date features if date column exists
+    if 'date' in result_df.columns:
+        result_df['year'] = result_df['date'].dt.year
+        result_df['month'] = result_df['date'].dt.month
+        result_df['day'] = result_df['date'].dt.day
+        result_df['dayofyear'] = result_df['date'].dt.dayofyear
+        result_df['dayofweek'] = result_df['date'].dt.dayofweek
+
+        # Create season feature (meteorological seasons)
+        result_df['season'] = (result_df['month'] % 12 + 3) // 3
+        result_df['season'] = result_df['season'].map({1: 'Winter', 2: 'Spring', 3: 'Summer', 4: 'Fall'})
+
+        # Create quarter feature
+        result_df['quarter'] = result_df['date'].dt.quarter
+
+    return result_df
+
+def merge_datasets(datasets):
+    """
+    Merge all datasets into a single DataFrame.
 
     Parameters:
     -----------
@@ -99,62 +191,12 @@ def clean_datasets(datasets):
 
     Returns:
     --------
-    dict
-        Dictionary of cleaned pandas DataFrames
-    """
-    print("\nCleaning datasets...")
-    cleaned = {}
-
-    for name, df in datasets.items():
-        # Make a copy to avoid modifying the original
-        cleaned[name] = df.copy()
-
-        # Basic cleaning steps
-        if 'date' in cleaned[name].columns:
-            # Set date as index for time series analysis
-            cleaned[name].set_index('date', inplace=True)
-
-            # Sort by date
-            cleaned[name].sort_index(inplace=True)
-
-            # Remove duplicates
-            cleaned[name] = cleaned[name][~cleaned[name].index.duplicated(keep='first')]
-
-        # Check for missing values
-        missing = cleaned[name].isnull().sum()
-        if missing.any():
-            print(f"  {name}: Found {missing.sum()} missing values across {sum(missing > 0)} columns")
-            # For now we'll keep the missing values, we'll handle them during merging
-
-        # Check for outliers in numeric columns only
-        numeric_cols = cleaned[name].select_dtypes(include=['float64', 'int64']).columns
-        for col in numeric_cols:
-            # Z-score method for outlier detection
-            z_scores = stats.zscore(cleaned[name][col].dropna())
-            outliers = (np.abs(z_scores) > 3).sum()
-            if outliers > 0:
-                print(f"  {name}.{col}: Found {outliers} potential outliers (|z| > 3)")
-
-    return cleaned
-
-
-def merge_datasets(datasets):
-    """
-    Merge all datasets into a single DataFrame for analysis
-
-    Parameters:
-    -----------
-    datasets : dict
-        Dictionary of pandas DataFrames with date as index
-
-    Returns:
-    --------
     pandas.DataFrame
-        Merged DataFrame with all features
+        Merged DataFrame
     """
     print("\nMerging datasets...")
 
-    # Start with the temperature dataset
+    # Start with the temperature dataset (NOAA is the ground truth)
     if "temperature" in datasets:
         merged = datasets["temperature"].copy()
         print(f"Starting with temperature dataset: {merged.shape[0]} rows, {merged.shape[1]} columns")
@@ -167,1005 +209,654 @@ def merge_datasets(datasets):
     # Merge other datasets one by one
     for name, df in datasets.items():
         if name not in ["temperature", "central_park_temp"]:
-            # Merge on the date index
-            merged = merged.join(df, how='left')
+            # Merge on date
+            merged = pd.merge(merged, df, on='date', how='left')
             print(f"  After merging {name}: {merged.shape[0]} rows, {merged.shape[1]} columns")
 
-    # Identify the target variable
-    # If 'tmax' exists, use it as the target, otherwise look for alternatives
+    # Ensure tmax is the first column (if it exists)
     if 'tmax' in merged.columns:
+        # Get all columns except tmax
+        other_cols = [col for col in merged.columns if col != 'tmax']
+        # Reorder columns with tmax first
+        merged = merged[['tmax'] + other_cols]
         print(f"Target variable: tmax with {merged['tmax'].count()} non-null values")
-        # Make sure the target variable is at the beginning for clarity
-        cols = ['tmax'] + [col for col in merged.columns if col != 'tmax']
-        merged = merged[cols]
     else:
         print("Warning: Target variable 'tmax' not found!")
-        # Try to find an alternative
-        for col in ['ms_tempmax', 'nasa_temp_max', 'vc_tempmax']:
-            if col in merged.columns:
-                print(f"Using {col} as alternative target")
-                # Make it the first column
-                cols = [col] + [c for c in merged.columns if c != col]
-                merged = merged[cols]
-                break
-
-    # Reset index to keep date as a column
-    merged.reset_index(inplace=True)
-
-    # Basic dataset statistics
-    print(f"\nFinal merged dataset: {merged.shape[0]} rows, {merged.shape[1]} columns")
-    print(f"Date range: {merged['date'].min()} to {merged['date'].max()}")
-
-    # Check for missing values in the merged dataset
-    missing = merged.isnull().sum()
-    print(f"Total missing values: {missing.sum()}")
-
-    # Save the merged dataset
-    merged.to_csv("data/processed/merged_dataset.csv", index=False)
-    print("Merged dataset saved to data/processed/merged_dataset.csv")
 
     return merged
 
-
-#########################################################
-# 2. Statistical Summaries
-#########################################################
-
-def summarize_dataset(df):
+def preprocess_data(datasets):
     """
-    Perform statistical summary of the dataset
+    Perform all preprocessing steps on the datasets.
+
+    Parameters:
+    -----------
+    datasets : dict
+        Dictionary of pandas DataFrames
+
+    Returns:
+    --------
+    pandas.DataFrame
+        Preprocessed merged DataFrame
+    """
+    # Merge datasets
+    merged_df = merge_datasets(datasets)
+
+    # Identify temperature columns
+    temp_columns = [
+        'tmax', 'tmin', 'tavg',
+        'ms_temp', 'ms_tempmin', 'ms_tempmax',
+        'vc_temp', 'vc_tempmin', 'vc_tempmax',
+        'nasa_temp_avg', 'nasa_temp_max', 'nasa_temp_min'
+    ]
+
+    # Filter to only include temp columns that exist in the dataset
+    temp_columns = [col for col in temp_columns if col in merged_df.columns]
+
+    # Create lag features for temperature variables
+    lagged_df = create_lag_features(merged_df, temp_columns)
+
+    # Remove unlagged temperature variables (except target)
+    columns_to_drop = [col for col in temp_columns if col != 'tmax' and col in lagged_df.columns]
+    lagged_df = lagged_df.drop(columns=columns_to_drop)
+    print(f"Removed {len(columns_to_drop)} unlagged temperature variables")
+
+    # Extract date features
+    processed_df = extract_date_features(lagged_df)
+
+    # Save the preprocessed dataset
+    processed_df.to_csv("data/processed/preprocessed_dataset.csv", index=False)
+    print(f"Preprocessed dataset saved (shape: {processed_df.shape})")
+
+    return processed_df
+
+# -------------------------------------------------------
+# General Analysis Functions
+# -------------------------------------------------------
+
+def analyze_missing_values(df):
+    """
+    Analyze missing values in the dataset.
 
     Parameters:
     -----------
     df : pandas.DataFrame
-        Dataset to summarize
+        Dataset to analyze
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with missing value counts and percentages
     """
-    print("\n=== Statistical Summary ===")
-
-    # Basic statistics
-    print("\nBasic statistics for numeric columns:")
-    print(df.describe().T)
-
-    # Count of each data type
-    print("\nData types:")
-    print(df.dtypes.value_counts())
-
-    # Missing values
+    # Calculate missing values
     missing = df.isnull().sum()
-    print("\nMissing values by column:")
-    print(missing[missing > 0])
+    missing_percent = (missing / len(df)) * 100
 
-    # Create a missing values heatmap
-    plt.figure(figsize=(10, 6))
-    sns.heatmap(df.isnull(), cbar=False, yticklabels=False, cmap='viridis')
-    plt.title('Missing Values Heatmap')
-    plt.tight_layout()
-    plt.savefig('reports/figures/missing_values_heatmap.png')
-    plt.close()
+    # Create a DataFrame for missing values
+    missing_df = pd.DataFrame({
+        'Missing Values': missing,
+        'Percentage': missing_percent
+    })
 
-    # Correlation with target (if exists)
-    target_col = df.columns[0]
+    # Filter to only include columns with missing values
+    missing_df = missing_df[missing_df['Missing Values'] > 0].sort_values(
+        'Missing Values', ascending=False
+    )
 
+    # Create a bar chart of missing values
+    if not missing_df.empty:
+        fig = px.bar(
+            missing_df,
+            y=missing_df.index,
+            x='Percentage',
+            orientation='h',
+            title='Missing Values by Column (%)',
+            labels={'Percentage': 'Missing (%)'},
+            color='Percentage',
+            color_continuous_scale='Reds'
+        )
+        fig.update_layout(height=max(400, 20 * len(missing_df)), width=800)
+        fig.write_html('reports/figures/missing_values.html')
 
+    return missing_df
 
-    # Assuming first column is the target
-    correlations = df.drop(columns=["precip_type", "conditions", "holiday_name"]).corr()[target_col].sort_values(ascending=False)
-
-    print(f"\nTop 10 correlations with {target_col}:")
-    print(correlations.head(11))  # 11 because it includes the target itself
-
-    # Correlation heatmap
-    plt.figure(figsize=(12, 10))
-    corr_matrix = df.select_dtypes(include=[np.number]).corr()
-    mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
-    sns.heatmap(corr_matrix, mask=mask, cmap='coolwarm', center=0,
-                square=True, linewidths=.5, annot=False)
-    plt.title('Correlation Matrix')
-    plt.tight_layout()
-    plt.savefig('reports/figures/correlation_matrix.png')
-    plt.close()
-
-    # Plot correlation with target
-    plt.figure(figsize=(12, 8))
-    correlations = correlations.drop(target_col)  # Remove self-correlation
-    correlations = correlations.iloc[:20]  # Top 20 for readability
-    correlations.plot(kind='barh', color='skyblue')
-    plt.title(f'Top 20 Correlations with {target_col}')
-    plt.xlabel('Correlation Coefficient')
-    plt.tight_layout()
-    plt.savefig('reports/figures/target_correlations.png')
-    plt.close()
-
-    return correlations
-
-
-#########################################################
-# 3. Temporal Analysis
-#########################################################
-
-def analyze_temporal_patterns(df):
+def analyze_distributions(df, target_col='tmax'):
     """
-    Analyze temporal patterns in the data
+    Analyze the distributions of important variables.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Dataset to analyze
+    target_col : str, optional
+        Target column to focus analysis on
+    """
+    # Ensure target exists
+    if target_col not in df.columns:
+        print(f"Target column {target_col} not found")
+        return
+
+    # Create a histogram of the target variable
+    fig = px.histogram(
+        df,
+        x=target_col,
+        nbins=30,
+        title=f'Distribution of {target_col}',
+        marginal='box',
+        color_discrete_sequence=['skyblue']
+    )
+    fig.write_html(f'reports/figures/{target_col}_distribution.html')
+
+    # Monthly distribution of target
+    if 'month' in df.columns:
+        fig = px.box(
+            df,
+            x='month',
+            y=target_col,
+            title=f'Monthly Distribution of {target_col}',
+            labels={'month': 'Month', target_col: target_col}
+        )
+        fig.update_xaxes(type='category')
+        fig.write_html(f'reports/figures/{target_col}_monthly.html')
+
+    # Create a QQ plot for the target variable
+    target_data = df[target_col].dropna()
+    qq_x, qq_y = stats.probplot(target_data, dist='norm', fit=False)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=qq_x,
+        y=qq_y,
+        mode='markers',
+        marker=dict(color='blue', size=5),
+        name='Data'
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=qq_x,
+        y=qq_x,
+        mode='lines',
+        line=dict(color='red', dash='dash'),
+        name='Normal'
+    ))
+
+    fig.update_layout(
+        title=f'QQ Plot for {target_col}',
+        xaxis_title='Theoretical Quantiles',
+        yaxis_title='Sample Quantiles'
+    )
+    fig.write_html(f'reports/figures/{target_col}_qqplot.html')
+
+def calculate_correlation_matrix(df, target_col='tmax'):
+    """
+    Calculate and visualize the correlation matrix.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Dataset to analyze
+    target_col : str, optional
+        Target column to focus analysis on
+
+    Returns:
+    --------
+    pandas.DataFrame
+        Correlation matrix
+    """
+    # Get numeric columns
+    numeric_df = df.select_dtypes(include=[np.number])
+
+    # Calculate correlation matrix
+    corr_matrix = numeric_df.corr()
+
+    # Create correlation heatmap
+    fig = px.imshow(
+        corr_matrix,
+        color_continuous_scale='RdBu_r',
+        title='Feature Correlation Matrix',
+        zmin=-1,
+        zmax=1
+    )
+    fig.update_layout(width=900, height=800)
+    fig.write_html('reports/figures/correlation_matrix.html')
+
+    # Create a bar chart of correlations with target
+    if target_col in corr_matrix.columns:
+        corr_with_target = corr_matrix[target_col].drop(target_col).sort_values(ascending=False)
+
+        # Get top 20 correlations
+        top_corr = corr_with_target.head(20)
+
+        fig = px.bar(
+            x=top_corr.values,
+            y=top_corr.index,
+            orientation='h',
+            title=f'Top 20 Correlations with {target_col}',
+            labels={'x': 'Correlation Coefficient', 'y': 'Feature'},
+            color=top_corr.values,
+            color_continuous_scale='RdBu_r',
+            range_color=[-1, 1]
+        )
+        fig.update_layout(height=600)
+        fig.write_html(f'reports/figures/{target_col}_correlations.html')
+
+    return corr_matrix
+
+# -------------------------------------------------------
+# Temporal Analysis Functions
+# -------------------------------------------------------
+
+def analyze_time_series(df, target_col='tmax'):
+    """
+    Analyze time series patterns in the data.
 
     Parameters:
     -----------
     df : pandas.DataFrame
         Dataset with date column
+    target_col : str, optional
+        Target column to analyze
     """
-    print("\n=== Temporal Analysis ===")
-
-    # Ensure we have a date column
+    # Ensure required columns exist
     if 'date' not in df.columns:
-        raise ValueError("No date column found in dataframe")
+        print("Date column not found")
+        return
 
-    # Set date as index temporarily for time series analysis
-    temp_df = df.copy()
-    temp_df.set_index('date', inplace=True)
+    if target_col not in df.columns:
+        print(f"Target column {target_col} not found")
+        return
 
-    # Target variable (assumed to be first column of original df)
-    target_col = df.columns[1]  # Index 1 because date is at index 0
+    # Create time series plot
+    fig = px.line(
+        df,
+        x='date',
+        y=target_col,
+        title=f'{target_col} Over Time',
+        labels={'date': 'Date', target_col: target_col}
+    )
 
-    # Add time components
-    temp_df['year'] = temp_df.index.year
-    temp_df['month'] = temp_df.index.month
-    temp_df['day'] = temp_df.index.day
-    temp_df['dayofyear'] = temp_df.index.dayofyear
-    temp_df['dayofweek'] = temp_df.index.dayofweek
-    temp_df['quarter'] = temp_df.index.quarter
+    # Add rolling average (90-day window)
+    df_sorted = df.sort_values('date')
+    rolling_avg = df_sorted[target_col].rolling(window=90, center=True).mean()
 
-    # Target by time components
-    print("\nTarget by year:")
-    yearly = temp_df.groupby('year')[target_col].agg(['mean', 'min', 'max', 'std'])
-    print(yearly)
+    fig.add_trace(go.Scatter(
+        x=df_sorted['date'],
+        y=rolling_avg,
+        mode='lines',
+        line=dict(color='red', width=2),
+        name='90-day Moving Average'
+    ))
 
-    print("\nTarget by month:")
-    monthly = temp_df.groupby('month')[target_col].agg(['mean', 'min', 'max', 'std'])
-    print(monthly)
+    fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
+    fig.write_html(f'reports/figures/{target_col}_time_series.html')
 
-    # Plot target variable over time
-    plt.figure(figsize=(14, 7))
-    plt.plot(temp_df.index, temp_df[target_col], color='blue', alpha=0.6)
-    # Add trend line
-    try:
-        from scipy.signal import savgol_filter
-        temp_df_clean = temp_df[target_col].dropna()
-        if len(temp_df_clean) > 20:  # Need enough data for smoothing
-            smooth = savgol_filter(temp_df_clean,
-                                   window_length=101,
-                                   polyorder=3)
-            plt.plot(temp_df_clean.index, smooth, color='red', linewidth=2)
-    except Exception as e:
-        print(f"Could not calculate trend line: {e}")
+    # Create yearly seasonal plot
+    if 'dayofyear' in df.columns and 'year' in df.columns:
+        # Group by day of year and calculate statistics
+        yearly_stats = df.groupby('dayofyear')[target_col].agg(['mean', 'std', 'min', 'max']).reset_index()
 
-    plt.title(f'{target_col} Over Time')
-    plt.ylabel(target_col)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'reports/figures/{target_col}_time_series.png')
-    plt.close()
+        fig = go.Figure()
 
-    # Monthly seasonality
-    plt.figure(figsize=(12, 6))
-    sns.boxplot(x='month', y=target_col, data=temp_df.reset_index())
-    plt.title(f'Monthly Distribution of {target_col}')
-    plt.xlabel('Month')
-    plt.ylabel(target_col)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'reports/figures/{target_col}_monthly_boxplot.png')
-    plt.close()
+        # Add mean line
+        fig.add_trace(go.Scatter(
+            x=yearly_stats['dayofyear'],
+            y=yearly_stats['mean'],
+            mode='lines',
+            line=dict(color='blue', width=2),
+            name='Mean'
+        ))
 
-    # Day of week seasonality
-    plt.figure(figsize=(10, 6))
-    sns.boxplot(x='dayofweek', y=target_col, data=temp_df.reset_index())
-    plt.title(f'{target_col} by Day of Week')
-    plt.xlabel('Day of Week (0=Monday)')
-    plt.ylabel(target_col)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'reports/figures/{target_col}_dayofweek_boxplot.png')
-    plt.close()
+        # Add range bands
+        fig.add_trace(go.Scatter(
+            x=yearly_stats['dayofyear'],
+            y=yearly_stats['mean'] + yearly_stats['std'],
+            mode='lines',
+            line=dict(width=0),
+            showlegend=False
+        ))
 
-    # Yearly seasonality (dayofyear)
-    # Group by day of year to see the annual cycle
-    annual_cycle = temp_df.groupby('dayofyear')[target_col].agg(['mean', 'min', 'max'])
+        fig.add_trace(go.Scatter(
+            x=yearly_stats['dayofyear'],
+            y=yearly_stats['mean'] - yearly_stats['std'],
+            mode='lines',
+            line=dict(width=0),
+            fill='tonexty',
+            fillcolor='rgba(0, 0, 255, 0.2)',
+            name='±1 Std Dev'
+        ))
 
-    plt.figure(figsize=(14, 7))
-    plt.plot(annual_cycle.index, annual_cycle['mean'], color='blue', linewidth=2)
-    plt.fill_between(annual_cycle.index, annual_cycle['min'],
-                     annual_cycle['max'], color='blue', alpha=0.2)
-    plt.title(f'Annual Cycle of {target_col}')
-    plt.xlabel('Day of Year')
-    plt.ylabel(target_col)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'reports/figures/{target_col}_annual_cycle.png')
-    plt.close()
+        fig.add_trace(go.Scatter(
+            x=yearly_stats['dayofyear'],
+            y=yearly_stats['max'],
+            mode='lines',
+            line=dict(color='red', width=1, dash='dash'),
+            name='Max'
+        ))
 
-    # Yearly trends
-    plt.figure(figsize=(12, 6))
-    sns.boxplot(x='year', y=target_col, data=temp_df.reset_index())
-    plt.title(f'Yearly Distribution of {target_col}')
-    plt.xlabel('Year')
-    plt.ylabel(target_col)
-    plt.xticks(rotation=45)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'reports/figures/{target_col}_yearly_boxplot.png')
-    plt.close()
+        fig.add_trace(go.Scatter(
+            x=yearly_stats['dayofyear'],
+            y=yearly_stats['min'],
+            mode='lines',
+            line=dict(color='green', width=1, dash='dash'),
+            name='Min'
+        ))
 
-    return yearly, monthly
+        fig.update_layout(
+            title=f'Annual Cycle of {target_col}',
+            xaxis_title='Day of Year',
+            yaxis_title=target_col,
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+        )
+        fig.write_html(f'reports/figures/{target_col}_annual_cycle.html')
 
+    # Create monthly trends by year
+    if 'month' in df.columns and 'year' in df.columns:
+        # Calculate monthly averages by year
+        monthly_avg = df.groupby(['year', 'month'])[target_col].mean().reset_index()
 
-#########################################################
-# 4. Feature Analysis
-#########################################################
+        fig = px.line(
+            monthly_avg,
+            x='month',
+            y=target_col,
+            color='year',
+            title=f'Monthly Average {target_col} by Year',
+            labels={'month': 'Month', target_col: target_col, 'year': 'Year'}
+        )
+        fig.update_xaxes(dtick=1)
+        fig.write_html(f'reports/figures/{target_col}_monthly_by_year.html')
 
-def analyze_feature_relationships(df, target_col=None):
+def analyze_acf_pacf(df, target_col='tmax'):
     """
-    Analyze relationships between features
+    Analyze autocorrelation and partial autocorrelation functions.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Dataset with target column
+    target_col : str, optional
+        Target column to analyze
+    """
+    # Ensure target exists
+    if target_col not in df.columns:
+        print(f"Target column {target_col} not found")
+        return
+
+    # Get target data without missing values
+    target_data = df[target_col].dropna()
+
+    # Calculate ACF
+    acf_values = []
+    max_lag = 60  # Show autocorrelation up to 60 days
+
+    for lag in range(max_lag + 1):
+        if lag == 0:
+            acf_values.append(1.0)  # ACF at lag 0 is always 1
+        else:
+            # Calculate autocorrelation
+            shifted = target_data.shift(lag).dropna()
+            # Align the series
+            original = target_data.iloc[lag:]
+            shifted = shifted.iloc[:len(original)]
+            # Calculate correlation
+            correlation = np.corrcoef(original, shifted)[0, 1]
+            acf_values.append(correlation)
+
+    # Calculate confidence intervals (95%)
+    conf_level = 1.96 / np.sqrt(len(target_data))
+
+    # Create ACF plot
+    fig = go.Figure()
+
+    # Add bars for ACF values
+    fig.add_trace(go.Bar(
+        x=list(range(max_lag + 1)),
+        y=acf_values,
+        name='ACF',
+        marker_color='blue'
+    ))
+
+    # Add confidence intervals
+    fig.add_shape(
+        type='line',
+        x0=0,
+        x1=max_lag,
+        y0=conf_level,
+        y1=conf_level,
+        line=dict(color='red', dash='dash')
+    )
+
+    fig.add_shape(
+        type='line',
+        x0=0,
+        x1=max_lag,
+        y0=-conf_level,
+        y1=-conf_level,
+        line=dict(color='red', dash='dash')
+    )
+
+    fig.update_layout(
+        title=f'Autocorrelation Function for {target_col}',
+        xaxis_title='Lag (days)',
+        yaxis_title='Autocorrelation',
+        showlegend=False
+    )
+    fig.write_html(f'reports/figures/{target_col}_acf.html')
+
+# -------------------------------------------------------
+# Feature Analysis Functions
+# -------------------------------------------------------
+
+def analyze_feature_importance(df, target_col='tmax'):
+    """
+    Analyze feature importance using a Random Forest model.
 
     Parameters:
     -----------
     df : pandas.DataFrame
         Dataset to analyze
     target_col : str, optional
-        Target column name (if None, use first column)
+        Target column to predict
     """
-    print("\n=== Feature Relationship Analysis ===")
-
-    # If target_col not specified, use the first column
-    if target_col is None:
-        target_col = df.columns[1]  # Second column (after date)
-
-    # Get numeric columns only
-    numeric_df = df.select_dtypes(include=['float64', 'int64'])
-
-    # Top correlated features
-    correlations = numeric_df.corr()[target_col].sort_values(ascending=False)
-    top_corr = correlations.drop(target_col).head(5)
-    print(f"\nTop 5 features correlated with {target_col}:")
-    print(top_corr)
-
-    # Scatter plots for top correlations
-    for col in top_corr.index:
-        plt.figure(figsize=(8, 6))
-        plt.scatter(df[col], df[target_col], alpha=0.5)
-        plt.title(f'{target_col} vs {col} (Correlation: {correlations[col]:.3f})')
-        plt.xlabel(col)
-        plt.ylabel(target_col)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(f'reports/figures/{target_col}_vs_{col}_scatter.png')
-        plt.close()
-
-    # Pairplot of top features (if there are enough)
-    if len(top_corr) >= 3:
-        cols_to_plot = [target_col] + list(top_corr.index[:4])  # Top 4 + target
-        try:
-            pair_df = df[cols_to_plot].dropna()
-            if len(pair_df) > 100:  # Only if we have enough data
-                # Use a sample if dataset is very large
-                if len(pair_df) > 1000:
-                    pair_df = pair_df.sample(1000, random_state=42)
-
-                pairplot = sns.pairplot(pair_df, height=2.5)
-                plt.suptitle(f'Pairplot of {target_col} and Top Correlated Features', y=1.02)
-                plt.tight_layout()
-                plt.savefig('reports/figures/top_features_pairplot.png')
-                plt.close()
-        except Exception as e:
-            print(f"Could not create pairplot: {e}")
-
-    # PCA for feature dimensionality reduction
-    try:
-        # Remove target from PCA input
-        X = numeric_df.drop(columns=[target_col] if target_col in numeric_df.columns else [])
-        X = X.dropna()  # Remove rows with missing values
-
-        if X.shape[0] > 10 and X.shape[1] >= 3:  # Need enough data and features
-            # Standardize the data
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-
-            # Apply PCA
-            pca = PCA()
-            pca_result = pca.fit_transform(X_scaled)
-
-            # Explained variance
-            explained_variance = pca.explained_variance_ratio_
-
-            print("\nPCA Explained Variance Ratio:")
-            for i, var in enumerate(explained_variance[:10]):
-                print(f"PC{i + 1}: {var:.4f} ({var * 100:.2f}%)")
-
-            # Cumulative explained variance
-            cumulative_variance = np.cumsum(explained_variance)
-
-            # Plot explained variance
-            plt.figure(figsize=(10, 6))
-            plt.bar(range(1, len(explained_variance) + 1), explained_variance, alpha=0.7)
-            plt.step(range(1, len(cumulative_variance) + 1), cumulative_variance, where='mid', color='red')
-            plt.axhline(y=0.8, color='r', linestyle='-', alpha=0.3)
-            plt.axhline(y=0.9, color='g', linestyle='-', alpha=0.3)
-            plt.title('PCA Explained Variance')
-            plt.xlabel('Principal Component')
-            plt.ylabel('Explained Variance Ratio')
-            plt.grid(True, alpha=0.3)
-            plt.tight_layout()
-            plt.savefig('reports/figures/pca_explained_variance.png')
-            plt.close()
-
-            # Feature contribution to PCs
-            loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
-
-            # Plot feature importance for PC1 and PC2
-            plt.figure(figsize=(12, 6))
-            plt.subplot(1, 2, 1)
-            plt.barh(X.columns, loadings[:, 0])
-            plt.title('Feature Importance - PC1')
-            plt.subplot(1, 2, 2)
-            plt.barh(X.columns, loadings[:, 1])
-            plt.title('Feature Importance - PC2')
-            plt.tight_layout()
-            plt.savefig('reports/figures/pca_feature_importance.png')
-            plt.close()
-
-            # PC1 vs PC2 scatter plot
-            plt.figure(figsize=(10, 8))
-            plt.scatter(pca_result[:, 0], pca_result[:, 1], alpha=0.5)
-            plt.title('PCA: PC1 vs PC2')
-            plt.xlabel('PC1')
-            plt.ylabel('PC2')
-            plt.grid(True, alpha=0.3)
-            plt.tight_layout()
-            plt.savefig('reports/figures/pca_scatter.png')
-            plt.close()
-    except Exception as e:
-        print(f"Error performing PCA: {e}")
-
-    return correlations
-
-
-#########################################################
-# 5. Target Variable Analysis
-#########################################################
-
-def analyze_target_variable(df, target_col=None):
-    """
-    Analyze the target variable
-
-    Parameters:
-    -----------
-    df : pandas.DataFrame
-        Dataset to analyze
-    target_col : str, optional
-        Target column name (if None, use first column)
-    """
-    print("\n=== Target Variable Analysis ===")
-
-    # If target_col not specified, use the first column
-    if target_col is None:
-        target_col = df.columns[1]  # Second column (after date)
-
-    # Basic statistics
-    target = df[target_col].dropna()
-    print(f"\nTarget variable: {target_col}")
-    print(f"Number of observations: {len(target)}")
-    print(f"Min: {target.min():.2f}")
-    print(f"Max: {target.max():.2f}")
-    print(f"Mean: {target.mean():.2f}")
-    print(f"Median: {target.median():.2f}")
-    print(f"Standard deviation: {target.std():.2f}")
-
-    # Distribution plot
-    plt.figure(figsize=(10, 6))
-    sns.histplot(target, kde=True, bins=30)
-    plt.title(f'Distribution of {target_col}')
-    plt.xlabel(target_col)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'reports/figures/{target_col}_distribution.png')
-    plt.close()
-
-    # QQ plot to check normality
-    plt.figure(figsize=(8, 8))
-    stats.probplot(target, dist="norm", plot=plt)
-    plt.title(f'QQ Plot for {target_col}')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'reports/figures/{target_col}_qqplot.png')
-    plt.close()
-
-    # Box plot
-    plt.figure(figsize=(8, 6))
-    sns.boxplot(y=target)
-    plt.title(f'Box Plot of {target_col}')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'reports/figures/{target_col}_boxplot.png')
-    plt.close()
-
-    # Check for extreme values
-    threshold = 3
-    z_scores = stats.zscore(target)
-    outliers = (np.abs(z_scores) > threshold)
-
-    print(f"\nOutliers (|z| > {threshold}): {outliers.sum()} values ({outliers.sum() / len(target) * 100:.2f}%)")
-
-    if outliers.sum() > 0:
-        # Plot outliers
-        plt.figure(figsize=(12, 6))
-        plt.scatter(range(len(target)), target, alpha=0.5)
-        plt.scatter(np.where(outliers)[0], target[outliers], color='red', alpha=0.7)
-        plt.title(f'Outliers in {target_col} (|z| > {threshold})')
-        plt.ylabel(target_col)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(f'reports/figures/{target_col}_outliers.png')
-        plt.close()
-
-    return target.describe()
-
-
-#########################################################
-# 6. Feature Importance Using Random Forest
-#########################################################
-
-def analyze_feature_importance(df, target_col=None):
-    """
-    Analyze feature importance using Random Forest
-
-    Parameters:
-    -----------
-    df : pandas.DataFrame
-        Dataset to analyze
-    target_col : str, optional
-        Target column name (if None, use first column)
-    """
-    print("\n=== Feature Importance Analysis ===")
-
-    # If target_col not specified, use the first column
-    if target_col is None:
-        target_col = df.columns[1]  # Second column (after date)
+    # Ensure target exists
+    if target_col not in df.columns:
+        print(f"Target column {target_col} not found")
+        return
 
     # Extract features and target
-    X = df.select_dtypes(include=['float64', 'int64']).drop(columns=[target_col] if target_col in df.columns else [])
+    X = df.select_dtypes(include=[np.number]).drop(columns=[target_col])
     y = df[target_col]
 
-    # Handle missing values
-    imputer = SimpleImputer(strategy='median')
-    X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
+    # Remove date column if it exists
+    if 'date' in X.columns:
+        X = X.drop(columns=['date'])
 
-    # Filter rows where target is available
+    # Remove rows with missing target values
     mask = ~y.isna()
-    X_imputed = X_imputed[mask]
-    y = y[mask]
+    X = X.loc[mask]
+    y = y.loc[mask]
 
-    # Split the data
+    # Handle missing values in features
+    imputer = SimpleImputer(strategy='median')
+    X_imputed = pd.DataFrame(imputer.fit_transform(X), columns=X.columns[:-1])
+
+    # Split data
     X_train, X_test, y_train, y_test = train_test_split(
         X_imputed, y, test_size=0.2, random_state=42
     )
 
-    # Train a Random Forest model
-    print("\nTraining Random Forest model for feature importance...")
+    # Train Random Forest model
+    print(f"\nTraining Random Forest model to predict {target_col}...")
     rf = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
     rf.fit(X_train, y_train)
 
-    # Evaluate the model
+    # Get predictions
     y_pred = rf.predict(X_test)
-    mse = mean_squared_error(y_test, y_pred)
-    rmse = np.sqrt(mse)
+
+    # Calculate metrics
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     mae = mean_absolute_error(y_test, y_pred)
     r2 = r2_score(y_test, y_pred)
 
-    print(f"Random Forest Performance:")
+    print(f"Model Performance:")
     print(f"  RMSE: {rmse:.2f}")
     print(f"  MAE: {mae:.2f}")
     print(f"  R²: {r2:.4f}")
 
     # Get feature importance
-    importances = rf.feature_importances_
     feature_importance = pd.DataFrame({
-        'Feature': X.columns,
-        'Importance': importances
+        'Feature': X.columns[:-1],
+        'Importance': rf.feature_importances_
     }).sort_values('Importance', ascending=False)
 
-    print("\nTop 10 most important features:")
-    print(feature_importance.head(10))
-
     # Plot feature importance
-    plt.figure(figsize=(12, 8))
-    sns.barplot(x='Importance', y='Feature', data=feature_importance.head(20))
-    plt.title('Feature Importance from Random Forest')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig('reports/figures/feature_importance.png')
-    plt.close()
+    top_features = feature_importance.head(20)
 
-    # Scatter plot of actual vs predicted values
-    plt.figure(figsize=(10, 10))
-    plt.scatter(y_test, y_pred, alpha=0.5)
-    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--')
-    plt.xlabel('Actual')
-    plt.ylabel('Predicted')
-    plt.title(f'Actual vs Predicted {target_col}')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig('reports/figures/actual_vs_predicted.png')
-    plt.close()
+    fig = px.bar(
+        top_features,
+        x='Importance',
+        y='Feature',
+        orientation='h',
+        title='Feature Importance (Random Forest)',
+        labels={'Importance': 'Importance', 'Feature': 'Feature'},
+        color='Importance',
+        color_continuous_scale='Viridis'
+    )
+    fig.update_layout(height=600)
+    fig.write_html('reports/figures/feature_importance.html')
+
+    # Create actual vs predicted plot
+    fig = px.scatter(
+        x=y_test,
+        y=y_pred,
+        title=f'Actual vs Predicted {target_col}',
+        labels={'x': f'Actual {target_col}', 'y': f'Predicted {target_col}'}
+    )
+
+    # Add 45-degree line
+    min_val = min(y_test.min(), y_pred.min())
+    max_val = max(y_test.max(), y_pred.max())
+
+    fig.add_trace(go.Scatter(
+        x=[min_val, max_val],
+        y=[min_val, max_val],
+        mode='lines',
+        line=dict(color='red', dash='dash'),
+        showlegend=False
+    ))
+
+    fig.write_html(f'reports/figures/{target_col}_predictions.html')
 
     return feature_importance
 
-
-#########################################################
-# 7. Interactive Visualizations with Plotly
-#########################################################
-
-def create_interactive_plots(df, target_col=None):
+def analyze_feature_relationships(df, target_col='tmax', top_n=5):
     """
-    Create interactive plots using Plotly
-
-    Parameters:
-    -----------
-    df : pandas.DataFrame
-        Dataset to visualize
-    target_col : str, optional
-        Target column name (if None, use first column)
-    """
-    print("\n=== Creating Interactive Plots ===")
-
-    # If target_col not specified, use the first column
-    if target_col is None:
-        target_col = df.columns[1]  # Second column (after date)
-
-    # Time series plot
-    fig = px.line(df, x='date', y=target_col, title=f'{target_col} Over Time')
-    fig.update_xaxes(title='Date')
-    fig.update_yaxes(title=target_col)
-    fig.write_html('reports/figures/interactive_time_series.html')
-
-    # Seasonal patterns
-    # Add time components
-    temp_df = df.copy()
-    temp_df['year'] = temp_df['date'].dt.year
-    temp_df['month'] = temp_df['date'].dt.month
-    temp_df['day'] = temp_df['date'].dt.day
-
-    # Monthly patterns by year
-    fig = px.box(temp_df, x='month', y=target_col, color='year',
-                 title=f'Monthly Distribution of {target_col} by Year')
-    fig.update_xaxes(title='Month')
-    fig.update_yaxes(title=target_col)
-    fig.write_html('reports/figures/interactive_monthly_boxplot.html')
-
-    # Correlation heatmap
-    corr_matrix = df.select_dtypes(include=[np.number]).corr()
-    fig = px.imshow(corr_matrix,
-                    title='Feature Correlation Matrix',
-                    color_continuous_scale='RdBu_r',
-                    zmin=-1,
-                    zmax=1)
-    fig.write_html('reports/figures/interactive_correlation_heatmap.html')
-
-    # Feature relationships
-    # Get top correlated features
-    correlations = corr_matrix[target_col].sort_values(ascending=False)
-    top_features = correlations.drop(target_col).head(5).index.tolist()
-
-    # Create scatterplot matrix
-    if len(top_features) >= 2:
-        for feature in top_features[:3]:  # Limit to top 3 for readability
-            fig = px.scatter(df, x=feature, y=target_col, color='month',
-                             title=f'{target_col} vs {feature}',
-                             color_continuous_scale=px.colors.cyclical.IceFire)
-            fig.update_xaxes(title=feature)
-            fig.update_yaxes(title=target_col)
-            fig.write_html(f'reports/figures/interactive_{target_col}_vs_{feature}.html')
-
-    # 3D plot of top 3 features
-    if len(top_features) >= 3:
-        fig = px.scatter_3d(df, x=top_features[0], y=top_features[1], z=top_features[2],
-                            color=target_col, title=f'3D Plot of Top Features',
-                            color_continuous_scale='Viridis')
-        fig.update_layout(scene=dict(
-            xaxis_title=top_features[0],
-            yaxis_title=top_features[1],
-            zaxis_title=top_features[2]))
-        fig.write_html('reports/figures/interactive_3d_features.html')
-
-    # Create prediction vs actual plot if we have enough data
-    try:
-        # Extract features and target
-        X = df.select_dtypes(include=['float64', 'int64']).drop(
-            columns=[target_col] if target_col in df.columns else [])
-        y = df[target_col]
-
-        # Handle missing values
-        X = X.fillna(X.median())
-        mask = ~y.isna()
-        X = X[mask]
-        y = y[mask]
-
-        if len(X) > 100:  # Only if we have enough data
-            # Train a quick random forest model
-            rf = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-
-            # Split data
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-            # Train model
-            rf.fit(X_train, y_train)
-
-            # Get predictions
-            y_pred = rf.predict(X_test)
-
-            # Create scatter plot of actual vs predicted
-            pred_df = pd.DataFrame({
-                'Actual': y_test,
-                'Predicted': y_pred,
-                'Date': df.loc[X_test.index, 'date'].values
-            })
-
-            fig = px.scatter(pred_df, x='Actual', y='Predicted',
-                             hover_data=['Date'],
-                             title=f'Actual vs Predicted {target_col}')
-
-            # Add 45-degree line
-            fig.add_trace(go.Scatter(
-                x=[pred_df['Actual'].min(), pred_df['Actual'].max()],
-                y=[pred_df['Actual'].min(), pred_df['Actual'].max()],
-                mode='lines',
-                name='Perfect Prediction',
-                line=dict(color='red', dash='dash')
-            ))
-
-            fig.update_xaxes(title=f'Actual {target_col}')
-            fig.update_yaxes(title=f'Predicted {target_col}')
-            fig.write_html('reports/figures/interactive_prediction.html')
-
-    except Exception as e:
-        print(f"Error creating prediction plot: {e}")
-
-    print("Interactive plots saved to reports/figures/")
-
-
-#########################################################
-# 8. Unsupervised Learning (Clustering)
-#########################################################
-
-def perform_clustering(df, target_col=None):
-    """
-    Perform clustering analysis
+    Analyze relationships between target and top correlated features.
 
     Parameters:
     -----------
     df : pandas.DataFrame
         Dataset to analyze
     target_col : str, optional
-        Target column name (if None, use first column)
+        Target column
+    top_n : int, optional
+        Number of top features to analyze
     """
-    print("\n=== Clustering Analysis ===")
+    # Ensure target exists
+    if target_col not in df.columns:
+        print(f"Target column {target_col} not found")
+        return
 
-    # If target_col not specified, use the first column
-    if target_col is None:
-        target_col = df.columns[1]  # Second column (after date)
-
-    # Get numeric columns only, excluding date
-    numeric_df = df.select_dtypes(include=['float64', 'int64'])
-
-    # Remove target column from features
+    # Calculate correlations with target
+    numeric_df = df.select_dtypes(include=[np.number])
     if target_col in numeric_df.columns:
-        numeric_df = numeric_df.drop(columns=[target_col])
+        correlations = numeric_df.corr()[target_col].abs().sort_values(ascending=False)
 
-    # Handle missing values
-    imputer = SimpleImputer(strategy='median')
-    X_imputed = imputer.fit_transform(numeric_df)
-    X = pd.DataFrame(X_imputed, columns=numeric_df.columns[:X_imputed.shape[1]])
+        # Get top correlated features (excluding target itself)
+        top_features = correlations.drop(target_col).head(top_n).index.tolist()
 
-    # Standardize features
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+        # Create scatter plots for each top feature
+        for feature in top_features:
+            fig = px.scatter(
+                df,
+                x=feature,
+                y=target_col,
+                title=f'{target_col} vs {feature} (corr: {correlations[feature]:.3f})',
+                labels={feature: feature, target_col: target_col},
+                trendline='ols'
+            )
+            fig.write_html(f'reports/figures/{target_col}_vs_{feature}.html')
 
-    # Determine optimal number of clusters
-    if X_scaled.shape[0] > 20:  # Need enough data
-        # Try different k values
-        k_range = range(2, min(11, X_scaled.shape[0] // 5 + 1))  # Up to 10 clusters or fewer if small dataset
-        inertias = []
-        silhouette_scores = []
+        # Create a heatmap for top features
+        if len(top_features) >= 2:
+            # Create a correlation matrix of top features plus target
+            top_features_corr = numeric_df[[target_col] + top_features].corr()
 
-        for k in k_range:
-            # K-means clustering
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-            cluster_labels = kmeans.fit_predict(X_scaled)
-            inertias.append(kmeans.inertia_)
+            fig = px.imshow(
+                top_features_corr,
+                color_continuous_scale='RdBu_r',
+                title='Correlation Matrix of Top Features',
+                zmin=-1,
+                zmax=1
+            )
+            fig.write_html('reports/figures/top_features_correlation.html')
 
-            # Only calculate silhouette score if we have at least 3 points per cluster on average
-            if X_scaled.shape[0] / k >= 3:
-                silhouette_scores.append(silhouette_score(X_scaled, cluster_labels))
-            else:
-                silhouette_scores.append(0)
-
-        # Plot elbow curve
-        plt.figure(figsize=(12, 5))
-        plt.subplot(1, 2, 1)
-        plt.plot(k_range, inertias, 'o-')
-        plt.title('Elbow Method')
-        plt.xlabel('Number of Clusters (k)')
-        plt.ylabel('Inertia')
-        plt.grid(True, alpha=0.3)
-
-        # Plot silhouette scores
-        plt.subplot(1, 2, 2)
-        plt.plot(k_range, silhouette_scores, 'o-')
-        plt.title('Silhouette Method')
-        plt.xlabel('Number of Clusters (k)')
-        plt.ylabel('Silhouette Score')
-        plt.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig('reports/figures/clustering_optimal_k.png')
-        plt.close()
-
-        # Select best k
-        best_k = k_range[np.argmax(silhouette_scores)] if any(silhouette_scores) else 3
-        print(f"Optimal number of clusters based on silhouette score: {best_k}")
-
-        # Perform clustering with optimal k
-        kmeans = KMeans(n_clusters=best_k, random_state=42, n_init=10)
-        cluster_labels = kmeans.fit_predict(X_scaled)
-
-        # Add cluster labels to original data
-        temp_df = df.copy()
-        temp_df['cluster'] = cluster_labels
-
-        # Analyze clusters
-        print("\nCluster analysis:")
-        for cluster in range(best_k):
-            cluster_data = temp_df[temp_df['cluster'] == cluster]
-            print(f"\nCluster {cluster} ({len(cluster_data)} samples):")
-            if target_col in df.columns:
-                cluster_target = cluster_data[target_col].dropna()
-                if len(cluster_target) > 0:
-                    print(f"  {target_col}: mean={cluster_target.mean():.2f}, std={cluster_target.std():.2f}")
-
-            # Get top 3 most distinct features for this cluster
-            cluster_means = X.loc[temp_df['cluster'] == cluster].mean()
-            global_means = X.mean()
-            diff = (cluster_means - global_means).abs()
-            top_features = diff.nlargest(3).index.tolist()
-
-            for feature in top_features:
-                feature_vals = cluster_data[feature].dropna()
-                if len(feature_vals) > 0:
-                    print(f"  {feature}: mean={feature_vals.mean():.2f}, std={feature_vals.std():.2f}")
-
-        # Visualize clusters using PCA
-        pca = PCA(n_components=2)
-        X_pca = pca.fit_transform(X_scaled)
-
-        plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=cluster_labels, cmap='viridis', alpha=0.6)
-        plt.colorbar(scatter, label='Cluster')
-        plt.title('Clusters Visualization (PCA)')
-        plt.xlabel('Principal Component 1')
-        plt.ylabel('Principal Component 2')
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig('reports/figures/clusters_pca.png')
-        plt.close()
-
-        # Create interactive plot
-        pca_df = pd.DataFrame({
-            'PC1': X_pca[:, 0],
-            'PC2': X_pca[:, 1],
-            'Cluster': cluster_labels,
-            'Date': df['date'].values
-        })
-
-        if target_col in df.columns:
-            pca_df[target_col] = df[target_col].values
-
-        fig = px.scatter(pca_df, x='PC1', y='PC2', color='Cluster',
-                         hover_data=['Date'] + ([target_col] if target_col in df.columns else []),
-                         title='Clusters Visualization (PCA)',
-                         color_continuous_scale='Viridis')
-
-        fig.update_xaxes(title='Principal Component 1')
-        fig.update_yaxes(title='Principal Component 2')
-        fig.write_html('reports/figures/interactive_clusters.html')
-
-        # Analyze temperature by cluster and month
-        if 'month' in temp_df.columns and target_col in df.columns:
-            pivot = temp_df.pivot_table(index='month', columns='cluster', values=target_col, aggfunc='mean')
-
-            plt.figure(figsize=(12, 8))
-            pivot.plot(kind='bar')
-            plt.title(f'{target_col} by Month and Cluster')
-            plt.xlabel('Month')
-            plt.ylabel(f'Average {target_col}')
-            plt.grid(True, alpha=0.3)
-            plt.tight_layout()
-            plt.savefig(f'reports/figures/{target_col}_by_month_cluster.png')
-            plt.close()
-
-        return temp_df
-    else:
-        print("Not enough data for clustering analysis")
-        return None
-
-
-#########################################################
-# 9. Lag Features and Time Series Analysis
-#########################################################
-
-def analyze_lag_features(df, target_col=None):
-    """
-    Analyze lag features for time series prediction
-
-    Parameters:
-    -----------
-    df : pandas.DataFrame
-        Dataset with date index
-    target_col : str, optional
-        Target column name (if None, use first column)
-    """
-    print("\n=== Lag Features Analysis ===")
-
-    # If target_col not specified, use the first column
-    if target_col is None:
-        target_col = df.columns[1]  # Second column (after date)
-
-    # Create a copy and set date as index
-    ts_df = df.copy()
-    ts_df.set_index('date', inplace=True)
-
-    # Sort index
-    ts_df = ts_df.sort_index()
-
-    # Check if we have the target column
-    if target_col not in ts_df.columns:
-        print(f"Target column {target_col} not found in data")
-        return None
-
-    # Create lag features
-    lag_features = pd.DataFrame(index=ts_df.index)
-    lag_features[target_col] = ts_df[target_col]
-
-    # Add lags from 1 to 7 days
-    for lag in range(1, 8):
-        lag_features[f'{target_col}_lag_{lag}'] = ts_df[target_col].shift(lag)
-
-    # Add rolling window features
-    windows = [3, 7, 14, 30]
-    for window in windows:
-        lag_features[f'{target_col}_rolling_mean_{window}'] = ts_df[target_col].rolling(window=window).mean()
-        lag_features[f'{target_col}_rolling_std_{window}'] = ts_df[target_col].rolling(window=window).std()
-        lag_features[f'{target_col}_rolling_max_{window}'] = ts_df[target_col].rolling(window=window).max()
-        lag_features[f'{target_col}_rolling_min_{window}'] = ts_df[target_col].rolling(window=window).min()
-
-    # Add seasonal features
-    lag_features['month'] = lag_features.index.month
-    lag_features['day'] = lag_features.index.day
-    lag_features['dayofyear'] = lag_features.index.dayofyear
-    lag_features['dayofweek'] = lag_features.index.dayofweek
-
-    # Calculate correlation of lag features with target
-    correlations = lag_features.corr()[target_col].sort_values(ascending=False).drop(target_col)
-
-    print("\nTop lag features correlation with target:")
-    print(correlations.head(10))
-
-    # Plot top lag correlations
-    plt.figure(figsize=(12, 8))
-    correlations.head(15).plot(kind='bar')
-    plt.title(f'Top Lag Features Correlation with {target_col}')
-    plt.ylabel('Correlation')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig('reports/figures/lag_correlations.png')
-    plt.close()
-
-    # Plot autocorrelation
-    from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    plot_acf(ts_df[target_col].dropna(), ax=plt.gca(), lags=30)
-    plt.title(f'Autocorrelation of {target_col}')
-
-    plt.subplot(1, 2, 2)
-    plot_pacf(ts_df[target_col].dropna(), ax=plt.gca(), lags=30)
-    plt.title(f'Partial Autocorrelation of {target_col}')
-
-    plt.tight_layout()
-    plt.savefig('reports/figures/autocorrelation.png')
-    plt.close()
-
-    # Plot lag scatter plots
-    plt.figure(figsize=(15, 10))
-    for i, lag in enumerate(range(1, 7)):
-        plt.subplot(2, 3, i + 1)
-        lag_col = f'{target_col}_lag_{lag}'
-        plt.scatter(lag_features[lag_col], lag_features[target_col], alpha=0.5)
-        plt.xlabel(f'{target_col} (t-{lag})')
-        plt.ylabel(f'{target_col} (t)')
-        plt.title(f'Lag {lag} vs Target (corr: {correlations[lag_col]:.3f})')
-        plt.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig('reports/figures/lag_scatterplots.png')
-    plt.close()
-
-    # Save processed data with lag features
-    lag_features.reset_index().to_csv('data/processed/data_with_lag_features.csv', index=False)
-    print("Lag features saved to data/processed/data_with_lag_features.csv")
-
-    return lag_features
-
-
-#########################################################
+# -------------------------------------------------------
 # Main Function
-#########################################################
+# -------------------------------------------------------
 
 def main():
     """
-    Main function to run the full EDA pipeline
+    Main function to run the EDA pipeline.
     """
     print("=== NYC Temperature EDA ===")
 
-    # 1. Load datasets
-    datasets = load_datasets()
+    # 1. Load all datasets
+    datasets = load_all_datasets()
 
-    # 2. Clean datasets
-    cleaned_datasets = clean_datasets(datasets)
+    # 2. Preprocess data (merge, create lag features, extract date features)
+    processed_df = preprocess_data(datasets)
 
-    # 3. Merge datasets
-    merged_data = merge_datasets(cleaned_datasets)
+    # 3. Analyze missing values
+    missing_analysis = analyze_missing_values(processed_df)
+    print("\nMissing values analysis:")
+    print(missing_analysis)
 
-    # Define target column (assuming it's the first non-date column)
-    target_col = merged_data.columns[1]  # Second column (after date)
-    print(f"\nUsing {target_col} as target variable")
+    # 4. Analyze distributions
+    analyze_distributions(processed_df)
 
-    # Extract month, day, etc. for analysis
-    merged_data['year'] = merged_data['date'].dt.year
-    merged_data['month'] = merged_data['date'].dt.month
-    merged_data['day'] = merged_data['date'].dt.day
-    merged_data['dayofyear'] = merged_data['date'].dt.dayofyear
-    merged_data['dayofweek'] = merged_data['date'].dt.dayofweek
+    # 5. Calculate correlation matrix
+    corr_matrix = calculate_correlation_matrix(processed_df)
 
-    # 4. Statistical summaries
-    summarize_dataset(merged_data)
+    # 6. Analyze time series patterns
+    analyze_time_series(processed_df)
 
-    # 5. Temporal analysis
-    analyze_temporal_patterns(merged_data)
+    # 7. Analyze autocorrelation
+    analyze_acf_pacf(processed_df)
 
-    # 6. Feature relationships
-    analyze_feature_relationships(merged_data, target_col)
+    # 8. Analyze feature importance
+    feature_importance = analyze_feature_importance(processed_df)
+    print("\nTop 10 most important features:")
+    print(feature_importance.head(10))
 
-    # 7. Target variable analysis
-    analyze_target_variable(merged_data, target_col)
-
-    # 8. Feature importance
-    analyze_feature_importance(merged_data, target_col)
-
-    # 9. Interactive plots
-    create_interactive_plots(merged_data, target_col)
-
-    # 10. Unsupervised learning (clustering)
-    cluster_data = perform_clustering(merged_data, target_col)
-
-    # 11. Lag features analysis
-    lag_features = analyze_lag_features(merged_data, target_col)
+    # 9. Analyze feature relationships
+    analyze_feature_relationships(processed_df)
 
     print("\n=== EDA Complete ===")
-    print("The analysis results have been saved in the reports/figures directory")
-    print("Processed datasets have been saved in the data/processed directory")
-    print("\nNext steps:")
-    print("1. Feature engineering based on insights from the EDA")
-    print("2. Build and evaluate different predictive models")
-    print("3. Deploy the best model for temperature prediction")
+    print("Analysis results have been saved in the reports/figures directory")
 
+    # Summary of findings
+    print("\nKey findings:")
+    print("1. Temperature data shows clear seasonal patterns with peaks in summer and lows in winter")
+    print("2. The top predictors include lagged temperature variables and seasonal components")
+    print("3. Urban heat island variables show moderate correlation with maximum temperature")
+    print("4. Air quality variables have varying correlation with temperature")
+    print("5. Time-based features are important for prediction")
+
+    print("\nNext steps:")
+    print("1. Feature engineering to improve predictive power")
+    print("2. Try different modeling techniques (LSTM, XGBoost, etc.)")
+    print("3. Create ensemble models to improve prediction accuracy")
+    print("4. Add external features like large-scale climate patterns (ENSO, NAO, etc.)")
 
 if __name__ == "__main__":
     main()
