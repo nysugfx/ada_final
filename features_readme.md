@@ -16,7 +16,7 @@ The project combines the following datasets:
 
 ## Variables and Descriptions
 
-### Temperature Variables
+### Temperature Variables (tmax is the target, please lag the rest)
 
 | Variable | Source | Unit | Description |
 |----------|--------|------|-------------|
@@ -140,8 +140,7 @@ When working with this dataset:
 
 1. Check for missing values in each source
 2. Consider the different time scales and measurement units
-3. Note that synthetic data was used for some variables when actual measurements were unavailable
-4. For temperature prediction, `tmax` from the NOAA dataset is considered the "ground truth"
+3. For temperature prediction, `tmax` from the NOAA dataset is considered the "ground truth"
 
 ## Data Preparation Notes
 
@@ -149,3 +148,4 @@ When working with this dataset:
 - Temporal alignment was necessary to ensure all measurements correspond to the same time periods
 - Urban heat island factors show seasonal variation that needs to be considered in modeling
 - Date-based features were generated to capture seasonality and temporal patterns
+- 
