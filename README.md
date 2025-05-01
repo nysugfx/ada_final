@@ -32,7 +32,7 @@ Each model is trained and evaluated to determine its effectiveness in predicting
 - Interaction terms
 
 ## Collaborators
-- [Jimin Park](jp4632)
-- [Alexander Daniel Friedman](alex-friedman-modo)
-- [Jiaheng Zhang](Chris010923)
-- [Hanzhong Yang](Aspirine2212)
+- [Jimin Park](https://github.com/jp4632)
+- [Alexander Daniel Friedman](https://github.com/alex-friedman-modo)
+- [Jiaheng Zhang](https://github.com/Chris010923)
+- [Hanzhong Yang](https://github.com/Aspirine2212)
